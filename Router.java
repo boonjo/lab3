@@ -6,6 +6,8 @@ import edu.wisc.cs.sdn.vnet.Iface;
 
 import net.floodlightcontroller.packet.*;
 
+import java.nio.ByteBuffer;
+import java.util.concurrent.ConcurrentHashMap;
 
 
 /**
@@ -19,11 +21,16 @@ public class Router extends Device
 	/** ARP cache for the router */
 	private ArpCache arpCache;
 
+	private Map<Integer, List<Ethernet>> arpQueue;
+
 	private final int TIME_EXCEEDED = 0;
 	private final int DEST_NET_UNREACHABLE = 1;
 	private final int DEST_HOST_UNREACHABLE = 2;
 	private final int DEST_PORT_UNREACHABLE = 3;
 	private final int ICMP_ECHO_REPLY = 4;
+
+	private final int ARP_REQUEST = 0;
+	private final int ARP_REPLY = 1;
 	
 	/**
 	 * Creates a router for a specific host.
@@ -34,6 +41,7 @@ public class Router extends Device
 		super(host,logfile);
 		this.routeTable = new RouteTable();
 		this.arpCache = new ArpCache();
+		this.arpQueue = new ConcurrentHashMap<Integer, List<Ethernet>>();
 	}
 	
 	/**
@@ -98,6 +106,8 @@ public class Router extends Device
 		case Ethernet.TYPE_IPv4:
 			this.handleIpPacket(etherPacket, inIface);
 			break;
+		case Ethernet.TYPE_ARP:
+			this.handleArpPacket(etherPacket, inIface);
 		// Ignore all other packet types, for now
 		}
 		
@@ -109,6 +119,10 @@ public class Router extends Device
 		// Make sure it's an IP packet
 		if (etherPacket.getEtherType() != Ethernet.TYPE_IPv4)
 		{ return; }
+
+		for (Iface iface: this.interfaces.values()){
+			arpCache.insert(iface.getMacAddress(), iface.getIpAddress());
+		}
 		
 		// Get IP header
 		IPv4 ipPacket = (IPv4)etherPacket.getPayload();
@@ -202,7 +216,11 @@ public class Router extends Device
         // Set destination MAC address in Ethernet header
         ArpEntry arpEntry = this.arpCache.lookup(nextHop);
         if (null == arpEntry)
-        { return; }
+        { 
+			System.out.println("ARP MISS IP")
+			handleArpMiss(nextHop, etherPacket, inIface, outIface);
+			return; 
+		}
         etherPacket.setDestinationMACAddress(arpEntry.getMac().toBytes());
         
         this.sendPacket(etherPacket, outIface);
@@ -307,5 +325,157 @@ public class Router extends Device
 
 		System.out.println("Send ICMP");
 		this.sendPacket(ether, inIface);
+	}
+
+	/* ARP */
+	private void handleArpPacket(Ethernet etherPacket, Iface inIface)
+	{
+		// Obtain the target protocol address from an ARP packet
+		ARP arpPacket = (ARP)etherPacket.getPayload();
+		int targetIp = ByteBuffer.wrap(arpPacket.getTargetProtocolAddress()).getInt();
+
+		for (Iface iface : this.interfaces.values())
+		{
+			if (targetIp == iface.getIpAddress()) 
+			{
+				if (ARP.OP_REQUEST == arpPacket.getOpCode()) 
+				{
+					System.out.println("ArpRequest received");
+					sendArp(0, ARP_REPLY, etherPacket, inIface, inIface);
+					break;
+				}
+				else if (ARP.OP_REPLY == arpPacket.getOpCode()) 
+				{
+					System.out.println("ArpReply received");
+
+					MACAddress mac = MACAddress.valueOf(arpPacket.getSenderHardwareAddress());
+					int ip = ByteBuffer.wrap(arpPacket.getSenderProtocolAddress()).getInt();
+					arpCache.insert(mac, ip);
+
+					System.out.println("Insert arp entry \n" + arpCache.toString());
+					synchronized(arpQueues)
+					{
+						// Debug
+						for (Map.Entry<Integer, List<Ethernet>> qEntry: arpQueues.entrySet()) {
+							System.out.println(IPv4.fromIPv4Address(qEntry.getKey()) + " :: " + IPv4.fromIPv4Address(ip) + " :: " + qEntry.getValue().size());						
+						}
+						List<Ethernet> queue = arpQueues.remove(ip);
+						if (queue != null) 
+						{
+							System.out.println("Send pending packets");
+							for (Ethernet ether : queue) 
+							{
+								ether.setDestinationMACAddress(mac.toBytes());
+								sendPacket(ether, inIface);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	private void sendArp(int ip, int type, Ethernet etherPacket, Iface inIface, Iface outIface)
+	{
+		Ethernet ether = new Ethernet();
+		ARP arp = new ARP();
+
+		// Ethernet Header
+		ether.setEtherType(Ethernet.TYPE_ARP);
+		ether.setSourceMACAddress(inIface.getMacAddress().toBytes());
+
+		// ARP Header
+		arp.setHardwareType(ARP.HW_TYPE_ETHERNET);
+		arp.setProtocolType(ARP.PROTO_TYPE_IP);
+		arp.setHardwareAddressLength((byte)Ethernet.DATALAYER_ADDRESS_LENGTH);
+		arp.setProtocolAddressLength((byte)4);
+		arp.setSenderHardwareAddress(inIface.getMacAddress().toBytes());
+		arp.setSenderProtocolAddress(inIface.getIpAddress());
+
+		switch(type) 
+		{
+			// ARP request packet
+			case ARP_REQUEST:
+			ether.setDestinationMACAddress(MAC_BROADCAST);
+			arp.setOpCode(ARP.OP_REQUEST);
+			arp.setTargetHardwareAddress(Ethernet.toMACAddress(MAC_ZERO));
+			arp.setTargetProtocolAddress(ip);
+			break;
+
+			// ARP reply packet
+			case ARP_REPLY:
+			ARP arpPacket = (ARP)etherPacket.getPayload();
+			ether.setDestinationMACAddress(etherPacket.getSourceMACAddress());
+			arp.setOpCode(ARP.OP_REPLY);
+			arp.setTargetHardwareAddress(arpPacket.getSenderHardwareAddress());
+			arp.setTargetProtocolAddress(arpPacket.getSenderProtocolAddress());
+			break;
+
+			default:
+			return;
+		}
+
+		ether.setPayload(arp);
+
+		if (debug_ARP) System.out.println("Send ARP Packet");
+		this.sendPacket(ether, outIface);
+	}
+
+	private void handleArpMiss(final int ip, final Ethernet etherPacket, final Iface inIface, final Iface outIface) 
+	{
+		IPv4 ipPacket = (IPv4)etherPacket.getPayload();
+		final Integer dstAddr = new Integer(ipPacket.getDestinationAddress());
+		RouteEntry bestMatch = this.routeTable.lookup(dstAddr);
+
+		if (null == bestMatch)
+		{ return; }
+
+		int temp = bestMatch.getGatewayAddress();
+		if (0 == temp)
+		{ temp = dstAddr; }
+		final int nextHop = temp;
+		synchronized(arpQueues)
+		{
+			if (arpQueues.containsKey(nextHop))
+			{
+				List<Ethernet> queue = arpQueues.get(nextHop);
+				queue.add(etherPacket);
+			}
+			else 
+			{
+				List<Ethernet> queue = new ArrayList<Ethernet>();
+				queue.add(etherPacket);
+				arpQueues.put(nextHop, queue);
+				TimerTask task = new TimerTask()
+				{
+					int counter = 0;
+					public void run()
+					{
+						if (null != arpCache.lookup(nextHop)) 
+						{ 
+							this.cancel(); 
+						}
+						else 
+						{
+							if (counter > 2) 
+							{
+								System.out.println("TimeOut\n" + arpCache.toString());
+								arpQueues.remove(nextHop);
+								sendICMP(DEST_HOST_UNREACHABLE, etherPacket, inIface);
+								this.cancel();
+							} 
+							else 
+							{
+								System.out.println("Timer  " + counter);
+								sendArp(ip, ARP_REQUEST, etherPacket, inIface, outIface);
+								counter++;
+							}
+						}
+					}
+				};
+				Timer timer = new Timer(true);
+				timer.schedule(task, 0, 1000);
+			}
+		}
 	}
 }
