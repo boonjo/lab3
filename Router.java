@@ -6,6 +6,7 @@ import edu.wisc.cs.sdn.vnet.Iface;
 
 import net.floodlightcontroller.packet.*;
 
+import java.util.*;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -22,7 +23,7 @@ public class Router extends Device
 	/** ARP cache for the router */
 	private ArpCache arpCache;
 
-	private Map<Integer, List<Ethernet>> arpQueue;
+	private Map<Integer, List<Ethernet>> arpQueues;
 
 	private final int TIME_EXCEEDED = 0;
 	private final int DEST_NET_UNREACHABLE = 1;
@@ -32,6 +33,10 @@ public class Router extends Device
 
 	private final int ARP_REQUEST = 0;
 	private final int ARP_REPLY = 1;
+
+	private final String MAC_BROADCAST = "ff:ff:ff:ff:ff:ff";
+	private final String MAC_ZERO = "00:00:00:00:00:00";
+	private final String IP_RIP_MULTICAST = "224.0.0.9";
 	
 	/**
 	 * Creates a router for a specific host.
@@ -42,7 +47,7 @@ public class Router extends Device
 		super(host,logfile);
 		this.routeTable = new RouteTable();
 		this.arpCache = new ArpCache();
-		this.arpQueue = new ConcurrentHashMap<Integer, List<Ethernet>>();
+		this.arpQueues = new ConcurrentHashMap<Integer, List<Ethernet>>();
 	}
 	
 	/**
@@ -255,7 +260,7 @@ public class Router extends Device
 		ArpEntry arpEntry = this.arpCache.lookup(nextHop);
 		if (null == arpEntry)
 		{  	
-			if (debug_ARP) System.out.println("arp miss icmp");
+			System.out.println("arp miss icmp");
 			handleArpMiss(nextHop, etherPacket, inIface, inIface);
 			return;   
 		}
@@ -418,7 +423,7 @@ public class Router extends Device
 
 		ether.setPayload(arp);
 
-		if (debug_ARP) System.out.println("Send ARP Packet");
+		System.out.println("Send ARP Packet");
 		this.sendPacket(ether, outIface);
 	}
 
