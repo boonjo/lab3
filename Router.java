@@ -10,6 +10,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
 
 
+
 /**
  * @author Aaron Gember-Jacobson and Anubhavnidhi Abhashkumar
  */
@@ -217,7 +218,7 @@ public class Router extends Device
         ArpEntry arpEntry = this.arpCache.lookup(nextHop);
         if (null == arpEntry)
         { 
-			System.out.println("ARP MISS IP")
+			System.out.println("ARP MISS IP");
 			handleArpMiss(nextHop, etherPacket, inIface, outIface);
 			return; 
 		}
