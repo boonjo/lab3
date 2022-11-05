@@ -117,6 +117,8 @@ public class Router extends Device
 			if (etherPacket.getEtherType() == Ethernet.TYPE_IPv4) {
 				IPv4 ipPacket = (IPv4)etherPacket.getPayload();
 
+				// check if an arriving IP packet has a destination 224.0.0.9, 
+				// a protocol type of UDP, and a UDP destination port of 520.
 				if (ipPacket.getDestinationAddress() == IPv4.toIPv4Address("224.0.0.9") || ipPacket.getDestinationAddress() == inIface.getIpAddress()) {						
 					if (ipPacket.getProtocol() == IPv4.PROTOCOL_UDP) {						
 						UDP udp = (UDP) ipPacket.getPayload();	
@@ -130,7 +132,8 @@ public class Router extends Device
 								break;
 								
 								case (RIPv2.COMMAND_RESPONSE):									
-									boolean change = false;									
+									boolean change = false;		
+									// update its route table based on these packets							
 									for (RIPv2Entry entry : rip.getEntries()) {										
 										if (!ripTable.containsKey(entry)) {
 											entry.setMetric(entry.getMetric() + 1);
@@ -146,7 +149,8 @@ public class Router extends Device
 										}
 									}
 									
-									if (change) {										
+									if (change) {									
+										// send any necessary RIP response packets	
 										for (Iface iface : this.interfaces.values()) {											
 											this.sendRipUnsolResponse(iface);
 										}
